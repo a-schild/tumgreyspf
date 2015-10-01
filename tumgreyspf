@@ -27,8 +27,8 @@ tumgreyspfsupp.setExceptHook()
 def is_loopback(address):
     '''Return true if address is a loopback IP.'''
     if (
-            address in ['127.0.0.1', '::1']
-            or address.startswith('127.0.0.')
+            address in [u'127.0.0.1', u'::1']
+            or address.startswith(u'127.0.0.')
             ):
         return True
 
@@ -37,7 +37,7 @@ def is_loopback(address):
     except ImportError:
         return False
 
-    loopback_cidrs = ['127.0.0.0/8', '::ffff:127.0.0.0/104', '::1/128']
+    loopback_cidrs = [u'127.0.0.0/8', u'::ffff:127.0.0.0/104', u'::1/128']
     compare = ipaddress.ip_interface(address).network.overlaps
     for cidr in loopback_cidrs:
         if compare(ipaddress.ip_interface(cidr).network):
@@ -327,14 +327,14 @@ def run_tests():
 
     class Tests(unittest.TestCase):
         def test_is_loopback(self):
-            self.assertEqual(is_loopback('10.1.1.1'), False)
-            self.assertEqual(is_loopback('127.0.0.1'), True)
-            self.assertEqual(is_loopback('::1'), True)
+            self.assertEqual(is_loopback(u'10.1.1.1'), False)
+            self.assertEqual(is_loopback(u'127.0.0.1'), True)
+            self.assertEqual(is_loopback(u'::1'), True)
 
             try:
                 import ipaddress
                 #  tests using ipaddress module (if available)
-                self.assertEqual(is_loopback('127.0.1.1'), True)
+                self.assertEqual(is_loopback(u'127.0.1.1'), True)
             except ImportError:
                 pass
 
