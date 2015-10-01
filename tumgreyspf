@@ -50,7 +50,7 @@ def is_loopback(address):
 def spfcheck(data, configData, configGlobal):
     debugLevel = configGlobal.get('debugLevel', 0)
     queue_id = ('QUEUE_ID="%s"' % (data.get('queue_id', '<UNKNOWN>')))
-    ip = data.get('client_address')
+    ip = data.get('client_address').decode('latin1')
     if ip == None:
         if debugLevel:
             syslog.syslog('spfcheck: No client address, exiting')
