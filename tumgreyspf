@@ -16,6 +16,7 @@ import time
 import popen2
 import errno
 import spf
+import ipaddress
 sys.path.append('/usr/local/lib/tumgreyspf')
 import tumgreyspfsupp
 
@@ -37,12 +38,18 @@ def is_loopback(address):
     except ImportError:
         return False
 
+    if debugLevel >= 3:
+        syslog.syslog('is_loopback: testing "%s"' % address )
     loopback_cidrs = ['127.0.0.0/8', '::ffff:127.0.0.0/104', '::1/128']
-    compare = ipaddress.ip_interface(address).network.overlaps
+    compare = ipaddress.ip_interface(address.decode("utf-8")).network.overlaps
     for cidr in loopback_cidrs:
-        if compare(ipaddress.ip_interface(cidr).network):
+        if compare(ipaddress.ip_interface(cidr.decode("utf-8")).network):
+            if debugLevel >= 3:
+                syslog.syslog('is_loopback: "%s" is loopback address' % address )
             return True
 
+    if debugLevel >= 3:
+        syslog.syslog('is_loopback: "%s" is not a loopback address' % address )
     return False
 
 
@@ -178,13 +185,41 @@ def greylistcheck(data, configData, configGlobal):
     ip = data.get('client_address')
     if ip == None:
         return((None, None))
-    ipBytes = string.split(ip, '.')
-    if configGlobal['ignoreLastByte'] > 0:
-        ipBytes = ipBytes[:-1]
+
+    ipAddr = ipaddress.ip_address(ip.decode("utf-8"))
+
+    if debugLevel >= 3:
+        syslog.syslog('greylistcheck: client_address "%s" is ipVersion: "%s"' %( ip, ipAddr.version ) )
+
+    if ipAddr.version == 4:
+        ipVersion = "ipv4"
+        ipBytes = string.split(ip, '.')
+        if configGlobal['ipv4NetworkMask'] > 0 and configGlobal['ipv4NetworkMask'] < 32:
+            ipv4NetMask = str(configGlobal['ipv4NetworkMask'])
+        else:
+            ipv4NetMask = "32"
+        ipInterface = ipaddress.ip_interface(ip.decode("utf-8") + "/" + ipv4NetMask )
+        ipNetwork   = ipInterface.network
+        ipNetAddr   = ipNetwork.network_address.exploded
+        ipBytes     = string.split(ipNetAddr, '.')
+    elif ipAddr.version == 6:
+        ipVersion = "ipv6"
+        if configGlobal['ipv6NetworkMask'] > 0 and configGlobal['ipv6NetworkMask'] < 128:
+            ipv6NetMask = str(configGlobal['ipv6NetworkMask'])
+        else:
+            ipv6NetMask = "128"
+        ipInterface = ipaddress.ip_interface(ip.decode("utf-8") + "/" + ipv6NetMask )
+        ipNetwork   =  ipInterface.network
+        ipNetAddr   =  ipNetwork.network_address.exploded
+        ipBytes     = string.split(ipNetAddr, ':')
+    else:
+        syslog.syslog('greylistcheck: ipaddress version is invalid: "%s"' % ipAddr.version )
+        return ( 'defer', 'Service unavailable, error checking IP address. See /var/log/maillog for more information.' )
+
     ipPath = string.join(ipBytes, '/')
 
     if configGlobal['greylistByIPOnly'] > 0:
-        dir = os.path.join(greylistDir, ipPath)
+        dir = os.path.join(greylistDir, 'client_address', ipVersion, ipPath)
         path = os.path.join(dir, 'check_file')
     else:
         sender = data.get('sender')
@@ -193,9 +228,11 @@ def greylistcheck(data, configData, configGlobal):
             return((None, None))
         sender = tumgreyspfsupp.quoteAddress(sender)
         recipient = tumgreyspfsupp.quoteAddress(recipient)
-        dir = os.path.join(greylistDir, 'client_address', ipPath, 'greylist',
-                sender)
+        dir = os.path.join(greylistDir, 'client_address', ipVersion, ipPath, 'greylist', sender)
         path = os.path.join(dir, recipient)
+
+    if debugLevel >= 3:
+        syslog.syslog('greylistcheck: check_file full path: "%s"' % path)
 
     allowTime = configData.get('GREYLISTTIME', 600)
 
@@ -290,19 +327,35 @@ def blackholecheck(data, configData, configGlobal):
     ip = data.get('client_address')
     if ip == None:
         return((None, None))
-    ipPath = string.join(string.split(ip, '.'), '/')
-    dir = os.path.join(blackholeDir, 'ips', ipPath)
 
     recipient = data.get('recipient')
     if not recipient:
         return((None, None))
     recipient = tumgreyspfsupp.quoteAddress(recipient)
 
+    ipAddr = ipaddress.ip_address(ip.decode("utf-8"))
+
+    if debugLevel >= 2:
+        syslog.syslog('blackholecheck: client_address="%s",recipient="%s", ipVersion="%s"' %( ip, recipient, ipAddr.version ) )
+
+    if ipAddr.version == 4:
+        ipPath = string.join(string.split(ipAddr.exploded, '.'), '/')
+        dir = os.path.join(blackholeDir, 'ips', 'ipv4', ipPath)
+    elif ipAddr.version == 6:
+        ipPath = string.join(string.split(ipAddr.exploded, ':'), '/')
+        dir = os.path.join(blackholeDir, 'ips', 'ipv6', ipPath)
+    else:
+        syslog.syslog('blackholecheck: ipaddress version is invalid: "%s"' % ipAddr.version )
+        return ( 'defer', 'Service unavailable, error checking IP address. See /var/log/maillog for more information.' )
+
     #  add blackhole
     recipientPath = os.path.join(blackholeDir, 'addresses', recipient)
     if os.path.exists(recipientPath):
         if not os.path.exists(dir):
-            os.path.makedirs(dir)
+            os.makedirs(dir)
+
+    if debugLevel >= 2:
+        syslog.syslog('blackholecheck: recipient="%s", recipientPath="%s", directory="%s"' %( recipient, recipientPath, dir ) )
 
     #  check for existing blackhole entry
     if os.path.exists(dir):

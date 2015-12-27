@@ -5,7 +5,16 @@
 
 S_rcsid = '$Id: tumgreyspfsupp.py,v 1.8 2007-06-10 01:11:11 jafo Exp $'
 
-import syslog, os, sys, string, re, time, popen2, urllib, stat
+import syslog
+import os
+import sys
+import string
+import re
+import time
+import popen2
+import urllib
+import stat
+import ipaddress
 
 
 #  default values
@@ -18,7 +27,8 @@ defaultConfigData = {
 		'greylistDir' : '/var/local/lib/tumgreyspf/data',
 		'blackholeDir' : '/var/local/lib/tumgreyspf/blackhole',
 		'spfqueryPath' : '/usr/local/lib/tumgreyspf/spfquery',
-		'ignoreLastByte' : 0,
+		'ipv4NetworkMask' : 32,
+		'ipv6NetworkMask' : 128,
 		}
 
 
@@ -263,9 +273,41 @@ def lookupConfig(configPath, msgData, configGlobal):
 							syslog.syslog('lookupConfig: Could not find client '
 									'address')
 					else:
+						ipAddr = ipaddress.ip_address(ip.decode("utf-8"))
+
+						if debugLevel >= 3:
+							syslog.syslog('lookupConfig: client_address "%s" is ipVersion: "%s"'
+													 %( ip, ipAddr.version ) )
+						if ipAddr.version == 4:
+							splitStr = "."
+							ipVersion = "ipv4"
+							if configGlobal['ipv4NetworkMask'] > 0 and configGlobal['ipv4NetworkMask'] < 32:
+								ipv4NetMask = str(configGlobal['ipv4NetworkMask'])
+							else:
+								ipv4NetMask = "32"
+							ipInterface = ipaddress.ip_interface(ip.decode("utf-8") + "/" + ipv4NetMask )
+							ipNetwork   = ipInterface.network
+							ipNetAddr   = ipNetwork.network_address.exploded
+							ipBytes     = string.split(ipNetAddr, '.')
+						elif ipAddr.version == 6:
+							splitStr = ":"
+							ipVersion = "ipv6"
+							if configGlobal['ipv6NetworkMask'] > 0 and configGlobal['ipv6NetworkMask'] < 128:
+							    ipv6NetMask = str(configGlobal['ipv6NetworkMask'])
+							else:
+							    ipv6NetMask = "128"
+							ipInterface = ipaddress.ip_interface(ip.decode("utf-8") + "/" + ipv6NetMask )
+							ipNetwork   =  ipInterface.network
+							ipNetAddr   =  ipNetwork.network_address.exploded
+						else:
+							syslog.syslog('lookupConfig: Could not detect IP protocol version')
+							sys.exit(1)
+
 						path = basePath
+						#use the ipNetAddr as config directory. Always use an exploded address string.
+						ip = ipNetAddr
 						for name in [ 'client_address' ] \
-								+ list(string.split(ip, '.')):
+								+ list(string.split(ip, splitStr)):
 							path = os.path.join(path, name)
 							defaultPath = os.path.join(path, '__default__')
 							if debugLevel >= 3:
@@ -291,3 +333,20 @@ def lookupConfig(configPath, msgData, configGlobal):
 
 	#  return results
 	return(configData)
+
+
+####################################################
+def prettyseconds(seconds):
+    signal = ""
+    if seconds < 0:
+        seconds = seconds * -1
+        signal = "-"
+
+    for prettySeconds, prettyDescription in (
+                    ( 86400, 'd' ),
+                    ( 3600, 'h' ),
+                    ( 60, 'm' ),
+                    ):
+        if seconds > prettySeconds:
+            return('%s%d%s' % (signal, seconds / prettySeconds, prettyDescription ))
+    return('%s%ss' % ( signal, seconds ))
