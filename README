@@ -140,7 +140,7 @@ TESTING
 
    Now look in the greylist data for this entry:
 
-      ls /path/to/data/client_address/10/9/8/7/greylist/user1@example.com/user2@example.com
+      ls /path/to/data/client_address/ipv4/10/9/8/7/greylist/user1@example.com/user2@example.com
 
    Wait 10 minutes (or whatever you set the greylisting time to) and try
    it again.  This time, in response to your "rcpt to" line, you should
@@ -278,7 +278,7 @@ INSTALL INSTRUCTIONS
          #  set up directories
          mkdir -p "$TGSPROG" "$TGSDATA"/config
          mkdir "$TGSDATA"/data
-         chown -R nobody "$TGSDATA"/data
+         chown -R "$TGSUSER" "$TGSDATA"/data
          cp __default__.dist "$TGSDATA"/config/__default__
 
          #  install programs
@@ -313,7 +313,7 @@ INSTALL INSTRUCTIONS
       "/etc/cron.d" directory, and the following can be be used to add an
       entry:
 
-         echo 0 0 * * * $TGSUSER $TGSPROG/tumgreyspf-clean \
+         echo "0 0 * * * $TGSUSER $TGSPROG/tumgreyspf-clean" \
                >/etc/cron.d/tumgreyspf
 
       Otherwise, you will need to use "crontab -e -u $TGSUSER" to add the
@@ -333,7 +333,7 @@ INSTALL INSTRUCTIONS
       Add to your postfix master.cf:
 
          tumgreyspf  unix  -       n       n       -       -       spawn
-            user=nobody argv=$TGSPROG/tumgreyspf
+            user=$TGSUSER argv=$TGSPROG/tumgreyspf
 
       Next, main.cf must be configured so that "smtpd_recipient_restrictions"
       includes a call to the tumgreyspf policy filter.  If you already have
