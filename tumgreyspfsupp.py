@@ -135,6 +135,8 @@ def readConfigFile(path, configData = None, configGlobal = {}):
 			'SPFSEEDONLY' : int,
 			'GREYLISTTIME' : int,
 			'CHECKERS' : str,
+			'CHECKNEXTIFSPFFAILS' : int,
+			'SPFVALIDATIONISENOUGH' : int,
 			'OTHERCONFIGS' : str,
 			'GREYLISTEXPIREDAYS' : float,
 			}
