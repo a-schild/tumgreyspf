@@ -11,77 +11,136 @@ import os, re, string, syslog, sys, time
 sys.path.append('/usr/local/lib/tumgreyspf')
 import tumgreyspfsupp
 
-###################
-def syslogprint(s):
-	print s
-syslog.syslog = syslogprint
-
+syslog.openlog(os.path.basename(sys.argv[0]), syslog.LOG_PID, syslog.LOG_MAIL)
 
 ##################################
-def visit(config, dirname, fileList):
-	ospathisfile = os.path.isfile
-	ospathjoin = os.path.join
-	base = config['greylistBasedir']
-	rx = re.compile(r'^/?(\d+)/(\d+)/(\d+)/((\d+)/)?greylist/(.*)$')
-	rxIp = re.compile(r'^/?(\d+)/(\d+)/(\d+)/((\d+)/)?check_file')
-	didUnlink = 0
-	for file in fileList:
-		path = ospathjoin(dirname, file)
-		if not ospathisfile(path): continue
+def remove_expired_files(config, dirname, fileList):
+    ospathisfile = os.path.isfile
+    ospathjoin = os.path.join
+    base  = os.path.join(config['greylistDir'], 'client_address', config['proto'])
 
-		recipient = file
-		relative = path[len(base):]
-		if configGlobal['greylistByIPOnly'] > 0:
-			m = rxIp.match(relative)
-		else:
-			m = rx.match(relative)
-		if not m:
-			print 'Unknown path "%s" found in greylist directory.' % relative
-			continue
+    if config['proto'] == "ipv4":
+        rx   = re.compile(r'^/?(\d+)/(\d+)/(\d+)/(\d+)/greylist/(.+)/(.+)$')
+        rxIp = re.compile(r'^/?(\d+)/(\d+)/(\d+)/(\d+)/check_file')
+    elif config['proto'] == "ipv6":
+        rx   = re.compile(r'^/?([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/greylist/(.+)/(.+)$')
+        rxIp = re.compile(r'^/?([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/check_file')
+    else:
+        message = "Error - Invalid IP protocol"            
+        syslog.syslog('tumgreyspf-clean: "%s"' % message )
+        sys.exit(2)
 
-		#  get IP information
-		groups = m.groups()
-		ipList = list(groups[:3])
-		if groups[3] != None: ipList.append(groups[4])
-		else: ipList.append('0')
+    didUnlink = 0
+    for file in fileList:
+        path = ospathjoin(dirname, file)
+        if not ospathisfile(path): continue
 
-		ip = string.join(ipList, '.')
-		sender = groups[5]
+        if debugLevel:
+            syslog.syslog('tumgreyspf-clean: analyzing file "%s"' % path )
 
-		#  look up expration day
-		data = {
-				'envelope_sender' : tumgreyspfsupp.unquoteAddress(sender),
-				'envelope_recipient' : tumgreyspfsupp.unquoteAddress(recipient),
-				'client_address' : ip,
-				}
-		configData = tumgreyspfsupp.lookupConfig(config.get('configPath'),
-				data, config.copy())
-		expireTime = time.time() - (configData['GREYLISTEXPIREDAYS'] * 86400)
+        relative = path[len(base):]
+        #check for any configuration type 
+        m = rxIp.match(relative)
+        greylistByIPOnly = True;
+        if not m:
+            m = rx.match(relative)
+            greylistByIPOnly = False;
+        if not m:
+            syslog.syslog('tumgreyspf-clean: Unknown path "%s" found in greylist directory.' % relative )
+            continue
 
-		#  check for expiration
-		statData = os.stat(path)
-		mtime = statData[8]
-		ctime = statData[9]
-		expiredAuth = ctime < mtime and (time.time() - mtime) > (12 * 3600)
-		expiredAfterAuth = ctime < expireTime
+        #  get IP information
+        groups = m.groups()
 
-		#  check for expiration
-		if expiredAuth or expiredAfterAuth:
-			os.remove(path)
-			didUnlink = 1
+        if debugLevel:
+            syslog.syslog('tumgreyspf-clean: regex matches: "%s"' % str(groups) )
 
-	#  remove this directory and it's parents if empty
-	if didUnlink:
-		newDirname = dirname
-		while len(newDirname) > len(base):
-			try: os.rmdir(newDirname)
-			except OSError: break
-			newDirname = os.path.dirname(newDirname)
+        if config['proto'] == "ipv4":
+            ipList = list(groups[:4])
+            ip = string.join(ipList, '.')
+
+        elif config['proto'] == "ipv6":
+            ipList = list(groups[:8])
+            ip = string.join(ipList, ':')
+
+        if greylistByIPOnly:
+            data = {
+                    'client_address' : ip,
+                    }
+            sender = ""
+            recipient = ""
+
+            if debugLevel:
+                syslog.syslog('tumgreyspf-clean: looking for config to IP "%s"' % ip )
+        else:
+            if config['proto'] == "ipv4":   sender = groups[5]
+            elif config['proto'] == "ipv6": sender = groups[8]
+            recipient = file
+
+            #  look up expiration day
+            data = {
+                    'envelope_sender' : tumgreyspfsupp.unquoteAddress(sender),
+                    'envelope_recipient' : tumgreyspfsupp.unquoteAddress(recipient),
+                    'client_address' : ip,
+                    }
+            if debugLevel:
+                syslog.syslog('tumgreyspf-clean: looking for config to IP="%s", sender="%s", recipient="%s"'
+                                       %( ip, tumgreyspfsupp.unquoteAddress(sender), tumgreyspfsupp.unquoteAddress(recipient) ))
+
+        configData = tumgreyspfsupp.lookupConfig(config.get('configPath'), data, config.copy())
+        expireTime = time.time() - (configData['GREYLISTEXPIREDAYS'] * 86400)
+
+        #  check for expiration
+        statData = os.stat(path)
+        mtime = statData[8]
+        ctime = statData[9]
+        expiredAuth = ctime < mtime and (time.time() - mtime) > (12 * 3600)
+        expiredAfterAuth = ctime < expireTime
+
+        #  check for expiration
+        if expiredAuth or expiredAfterAuth:
+            if debugLevel:
+                syslog.syslog('tumgreyspf-clean: removing expired file: "%s"' % path )
+
+            os.remove(path)
+            didUnlink = 1
+        else:
+            if debugLevel:
+                syslog.syslog('tumgreyspf-clean: not removing valid file: "%s"' % path )
+
+    # always remove empty directories
+    if didUnlink or not fileList:
+        if debugLevel:
+            syslog.syslog('tumgreyspf-clean: trying to remove directory and parents: "%s"' % dirname )
+        newDirname = dirname
+        while len(newDirname) > len(base):
+            if debugLevel:
+                syslog.syslog('tumgreyspf-clean: trying to remove directory: "%s"' % newDirname )
+            try: os.rmdir(newDirname)
+            except OSError: break
+            newDirname = os.path.dirname(newDirname)
 
 
 ############################
 #  main code
-config = tumgreyspfsupp.processConfigFile()
-greylistBasedir = os.path.join(config['greylistDir'], 'client_address')
-config['greylistBasedir'] = greylistBasedir
-os.path.walk(greylistBasedir, visit, config)
+
+
+configGlobal = tumgreyspfsupp.processConfigFile()
+debugLevel = configGlobal.get('debugLevel', 0)
+if debugLevel:
+    syslog.syslog('tumgreyspf-clean: starting')
+
+#check ipv4 directory for expired files
+ipv4GreylistBasedir = os.path.join(configGlobal['greylistDir'], 'client_address', 'ipv4')
+configGlobal['proto'] = 'ipv4'
+if debugLevel:
+    syslog.syslog('tumgreyspf-clean: checking "%s" directory: "%s"' %( configGlobal['proto'], ipv4GreylistBasedir) )
+os.path.walk(ipv4GreylistBasedir, remove_expired_files, configGlobal)
+
+#check ipv6 directory for expired files
+ipv6GreylistBasedir = os.path.join(configGlobal['greylistDir'], 'client_address', 'ipv6')
+configGlobal['proto'] = 'ipv6'
+if debugLevel:
+    syslog.syslog('tumgreyspf-clean: checking "%s" directory: "%s"' %( configGlobal['proto'], ipv6GreylistBasedir) )
+os.path.walk(ipv6GreylistBasedir, remove_expired_files, configGlobal)
+

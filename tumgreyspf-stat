@@ -10,86 +10,127 @@ import os, re, string, syslog, sys, time
 sys.path.append('/usr/local/lib/tumgreyspf')
 import tumgreyspfsupp
 
-###################
-def syslogprint(s):
-	print s
-syslog.syslog = syslogprint
-
+syslog.openlog(os.path.basename(sys.argv[0]), syslog.LOG_PID, syslog.LOG_MAIL)
 
 ##################################
-def visit(config, dirname, fileList):
-	ospathisfile = os.path.isfile
-	ospathjoin = os.path.join
-	base = config['greylistBasedir']
-	rx = re.compile(r'^/?(\d+)/(\d+)/(\d+)/(\d+)/greylist/(.*)$')
-	if config['ignoreLastByte'] > 0:
-		rx = re.compile(r'^/?(\d+)/(\d+)/(\d+)/greylist/(.*)$')
-	didUnlink = 0
-	for file in fileList:
-		path = ospathjoin(dirname, file)
-		if not ospathisfile(path): continue
+def tumgreyspf_stats(config, dirname, fileList):
+    ospathisfile = os.path.isfile
+    ospathjoin = os.path.join
+    base  = os.path.join(config['greylistDir'], 'client_address', config['proto'])
 
-		recipient = file
-		relative = dirname[len(base):]
-		m = rx.match(relative)
-		if not m:
-			print 'Unknown path "%s" found in greylist directory.' % relative
-			continue
-		ip = string.join(m.groups()[:-1], '.')
-		sender = m.groups()[-1]
+    if config['proto'] == "ipv4":
+        rx   = re.compile(r'^/?(\d+)/(\d+)/(\d+)/(\d+)/greylist/(.+)/(.+)$')
+        rxIp = re.compile(r'^/?(\d+)/(\d+)/(\d+)/(\d+)/check_file')
+    elif config['proto'] == "ipv6":
+        rx   = re.compile(r'^/?([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/greylist/(.+)/(.+)$')
+        rxIp = re.compile(r'^/?([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/([\d\w]+)/check_file')
+    else:
+        message = "Error - Invalid IP protocol"            
+        syslog.syslog('tumgreyspf-stats: "%s"' % message )
+        sys.exit(2)
 
-		#  look up expration day
-		data = {
-				'envelope_sender' : tumgreyspfsupp.unquoteAddress(sender),
-				'envelope_recipient' : tumgreyspfsupp.unquoteAddress(recipient),
-				'client_address' : ip,
-				}
-		configData = tumgreyspfsupp.lookupConfig(config.get('configPath'),
-				data, config.copy())
-		expireTime = time.time() - (configData['GREYLISTEXPIREDAYS'] * 86400)
+    for file in fileList:
+        path = ospathjoin(dirname, file)
+        if not ospathisfile(path): continue
 
-		#  check
-		statData = os.stat(path)
-		mtime = statData[8]
-		ctime = statData[9]
-		now = time.time()
+        if debugLevel:
+            syslog.syslog('tumgreyspf-stats: analyzing file "%s"' % path )
 
-		#  status information
-		stats = ''
-		if ctime < mtime:
-			stats = stats + 'Blocked,'
-		if mtime > now:
-			stats = stats + 'Pending,'
-		if stats:
-			stats = ' (%s)' % stats[:-1]
+        relative = path[len(base):]
+        #check for any configuration type 
+        m = rxIp.match(relative)
+        greylistByIPOnly = True;
+        if not m:
+            m = rx.match(relative)
+            greylistByIPOnly = False;
+        if not m:
+            syslog.syslog('tumgreyspf-stats: Unknown path "%s" found in greylist directory.' % relative )
+            continue
 
-		def prettyseconds(seconds):
-			for prettySeconds, prettyDescription in (
-					( 86400, 'd' ),
-					( 3600, 'h' ),
-					( 60, 'm' ),
-					):
-				if seconds > prettySeconds:
-					return('%d%s' % ( seconds / prettySeconds, prettyDescription ))
-			return('%ss' % seconds)
+        #  get IP information
+        groups = m.groups()
 
-		#  display information
-		print ('IP=%s SENDER=%s RECIPIENT=%s STARTS=%s LAST=%s EXPIRESIN=%s%s'
-				% ( ip, sender, recipient, prettyseconds(now - mtime),
-					prettyseconds(now - ctime),
-					prettyseconds(int(expireTime - now)), stats ))
+        if debugLevel:
+            syslog.syslog('tumgreyspf-stats: regex matches: "%s"' % str(groups) )
 
+        if config['proto'] == "ipv4":
+            ipList = list(groups[:4])
+            ip = string.join(ipList, '.')
+
+        elif config['proto'] == "ipv6":
+            ipList = list(groups[:8])
+            ip = string.join(ipList, ':')
+
+        if greylistByIPOnly:
+            data = {
+                    'client_address' : ip,
+                    }
+            sender = ""
+            recipient = ""
+
+            if debugLevel:
+                syslog.syslog('tumgreyspf-stats: looking for config to IP "%s"' % ip )
+        else:
+            if config['proto'] == "ipv4":   sender = groups[5]
+            elif config['proto'] == "ipv6": sender = groups[8]
+            recipient = file
+
+            #  look up expiration day
+            data = {
+                    'envelope_sender' : tumgreyspfsupp.unquoteAddress(sender),
+                    'envelope_recipient' : tumgreyspfsupp.unquoteAddress(recipient),
+                    'client_address' : ip,
+                    }
+            if debugLevel:
+                syslog.syslog('tumgreyspf-stats: looking for config to IP="%s", sender="%s", recipient="%s"'
+                                       %( ip, tumgreyspfsupp.unquoteAddress(sender), tumgreyspfsupp.unquoteAddress(recipient) ))
+
+        configData = tumgreyspfsupp.lookupConfig(config.get('configPath'), data, config.copy())
+
+        #  check info
+        statData = os.stat(path)
+        mtime = statData[8]
+        ctime = statData[9]
+        now = time.time()
+        expireIn = mtime + (configData['GREYLISTEXPIREDAYS'] * 86400) - now
+
+        #  status information
+        stats = ''
+        if mtime >= now:
+            stats = 'Pending'
+        if mtime < now:
+            stats = 'Allowed'
+        #if ctime < mtime:
+        #    stats = 'Blocked'
+
+        #  display information
+        print ('STATUS=(%s) SENDER=(%s) RECIPIENT=(%s) ALLOWED=(%s)ago LASTMAIL=(%s)ago EXPIRESIN=(%s) IP=(%s)'
+                        % ( stats, sender, recipient, 
+                                tumgreyspfsupp.prettyseconds(now - mtime),
+                                tumgreyspfsupp.prettyseconds(now - ctime),
+                                tumgreyspfsupp.prettyseconds(expireIn),
+                                ip ))
 
 ############################
 #  main code
-config = tumgreyspfsupp.processConfigFile()
-greylistBasedir = os.path.join(config['greylistDir'], 'client_address')
-config['greylistBasedir'] = greylistBasedir
-try:
-	os.path.walk(greylistBasedir, visit, config)
 
-#  ignore interrupts and errors writing stdout
-except IOError, e:
-	if e.errno != 32: raise
-except KeyboardInterrupt:
-	pass
+
+configGlobal = tumgreyspfsupp.processConfigFile()
+debugLevel = configGlobal.get('debugLevel', 0)
+if debugLevel:
+    syslog.syslog('tumgreyspf-stats: starting')
+
+#check ipv4 directory for expired files
+ipv4GreylistBasedir = os.path.join(configGlobal['greylistDir'], 'client_address', 'ipv4')
+configGlobal['proto'] = 'ipv4'
+if debugLevel:
+    syslog.syslog('tumgreyspf-stats: checking "%s" directory: "%s"' %( configGlobal['proto'], ipv4GreylistBasedir) )
+os.path.walk(ipv4GreylistBasedir, tumgreyspf_stats, configGlobal)
+
+#check ipv6 directory for expired files
+ipv6GreylistBasedir = os.path.join(configGlobal['greylistDir'], 'client_address', 'ipv6')
+configGlobal['proto'] = 'ipv6'
+if debugLevel:
+    syslog.syslog('tumgreyspf-stats: checking "%s" directory: "%s"' %( configGlobal['proto'], ipv6GreylistBasedir) )
+os.path.walk(ipv6GreylistBasedir, tumgreyspf_stats, configGlobal)
+
